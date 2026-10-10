@@ -43,7 +43,7 @@ func (s *Server) handleCreateReceipt(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "issue_id and qty must be positive")
 		return
 	}
-	receivedOn, err := parseDate(req.ReceivedOn)
+	receivedOn, err := time.Parse("2006-01-02", req.ReceivedOn)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "received_on must be YYYY-MM-DD")
 		return
@@ -136,11 +136,4 @@ func pathID(r *http.Request, name string) (int64, error) {
 		return 0, errors.New("invalid id")
 	}
 	return id, nil
-}
-
-func parseDate(s string) (time.Time, error) {
-	if t, err := time.Parse("2006-01-02", s); err == nil {
-		return t, nil
-	}
-	return time.Parse(time.RFC3339, s)
 }

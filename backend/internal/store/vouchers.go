@@ -31,8 +31,9 @@ func (s *Store) ListVouchers(ctx context.Context, status string) ([]Voucher, err
 	return out, rows.Err()
 }
 
-// RetryVoucher requeues a failed voucher: pending again, attempts reset,
-// lease cleared, so the next worker pass picks it up immediately.
+// RetryVoucher requeues a failed voucher: pending again with a fresh attempt
+// budget, so the next worker pass picks it up. The previous failure reason
+// stays visible on the page until the next attempt overwrites it.
 func (s *Store) RetryVoucher(ctx context.Context, id int64) (Voucher, error) {
 	var v Voucher
 	err := s.pool.QueryRow(ctx, `
@@ -41,8 +42,7 @@ func (s *Store) RetryVoucher(ctx context.Context, id int64) (Voucher, error) {
 		       attempts = 0,
 		       next_attempt_at = now(),
 		       lease_until = NULL,
-		       lease_token = NULL,
-		       last_error = ''
+		       lease_token = NULL
 		 WHERE id = $1 AND status = 'failed'
 		 RETURNING `+voucherColumns, id).
 		Scan(voucherScanTargets(&v)...)

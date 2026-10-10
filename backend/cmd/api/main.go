@@ -39,7 +39,7 @@ func main() {
 		Handler:           httpapi.New(pool),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
-		WriteTimeout:      30 * time.Second,
+		WriteTimeout:      35 * time.Second, // above the handler timeout so chi can still write its 504
 		IdleTimeout:       60 * time.Second,
 	}
 

@@ -25,6 +25,13 @@ func New(pool *pgxpool.Pool) http.Handler {
 
 	r := chi.NewRouter()
 	r.Use(middleware.RequestID)
+	r.Use(func(next http.Handler) http.Handler {
+		// Echo the request id so a client-side 500 report maps to a log line.
+		return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+			w.Header().Set("X-Request-Id", middleware.GetReqID(req.Context()))
+			next.ServeHTTP(w, req)
+		})
+	})
 	r.Use(middleware.RealIP)
 	r.Use(middleware.Logger)
 	r.Use(middleware.Recoverer)

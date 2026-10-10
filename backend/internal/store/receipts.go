@@ -41,17 +41,19 @@ func (s *Store) CreateOrReplayReceipt(ctx context.Context, issueID int64, qty in
 
 	switch {
 	case err == nil:
-		amountPaise, priceErr := receiptAmount(ctx, tx, issueID, qty)
-		if priceErr != nil {
-			return out, priceErr
-		}
-		if err := tx.QueryRow(ctx, `
+		// Price and write the voucher in one statement: amount = qty × the
+		// issue's SKU rate (integer paise), keeping the locked window short.
+		err := tx.QueryRow(ctx, `
 			INSERT INTO vouchers (type, source_id, amount_paise, client_ref)
-			VALUES ('jobwork_receipt', $1, $2, $3)
+			SELECT 'jobwork_receipt', $1, s.rate_paise * $2, $3
+			  FROM jobwork_issues i
+			  JOIN skus s ON s.id = i.sku_id
+			 WHERE i.id = $4
 			RETURNING `+voucherColumns,
-			out.Receipt.ID, amountPaise, fmt.Sprintf("receipt-%d", out.Receipt.ID)).
-			Scan(voucherScanTargets(&out.Voucher)...); err != nil {
-			return out, fmt.Errorf("insert voucher: %w", err)
+			out.Receipt.ID, qty, fmt.Sprintf("receipt-%d", out.Receipt.ID), issueID).
+			Scan(voucherScanTargets(&out.Voucher)...)
+		if err != nil {
+			return out, mapReceiptError(err)
 		}
 
 	case errors.Is(err, pgx.ErrNoRows):
@@ -65,6 +67,12 @@ func (s *Store) CreateOrReplayReceipt(ctx context.Context, issueID int64, qty in
 			Scan(&out.Receipt.ID, &out.Receipt.IssueID, &out.Receipt.Qty,
 				&out.Receipt.ReceivedOn, &out.Receipt.IdempotencyKey, &out.Receipt.CreatedAt); err != nil {
 			return out, fmt.Errorf("load replayed receipt: %w", err)
+		}
+		// The trigger catches same-body replays, but a concurrent reuse of the
+		// key with a different body can slip past its snapshot; verify here so
+		// the caller always gets 409 instead of someone else's receipt.
+		if out.Receipt.IssueID != issueID || out.Receipt.Qty != qty || !out.Receipt.ReceivedOn.Equal(receivedOn) {
+			return out, ErrKeyReuse
 		}
 		if err := tx.QueryRow(ctx, `
 			SELECT `+voucherColumns+`
@@ -82,17 +90,4 @@ func (s *Store) CreateOrReplayReceipt(ctx context.Context, issueID int64, qty in
 		return out, fmt.Errorf("commit: %w", err)
 	}
 	return out, nil
-}
-
-// receiptAmount prices a receipt: qty at the issue's SKU rate, integer paise.
-func receiptAmount(ctx context.Context, tx pgx.Tx, issueID int64, qty int) (int64, error) {
-	var ratePaise int64
-	if err := tx.QueryRow(ctx, `
-		SELECT s.rate_paise
-		  FROM jobwork_issues i
-		  JOIN skus s ON s.id = i.sku_id
-		 WHERE i.id = $1`, issueID).Scan(&ratePaise); err != nil {
-		return 0, mapReceiptError(err)
-	}
-	return ratePaise * int64(qty), nil
 }
