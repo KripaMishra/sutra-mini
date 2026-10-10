@@ -27,6 +27,21 @@ export default function SyncPage() {
 async function Vouchers() {
   const { vouchers, error } = await fetchVouchers();
 
+  // An outage must not render as "all clear": no zeroed stats, no empty
+  // sections — just the reason and a way back.
+  if (error) {
+    return (
+      <>
+        <div className="mb-6 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
+          {error}
+        </div>
+        <p className="rounded-xl border border-dashed border-slate-200 px-4 py-6 text-sm text-slate-400">
+          Voucher data is unavailable right now — fix the API connection, then press R or Refresh.
+        </p>
+      </>
+    );
+  }
+
   const groups: Record<VoucherStatus, Voucher[]> = { failed: [], pending: [], pushed: [] };
   for (const voucher of vouchers) {
     groups[voucher.status]?.push(voucher);
@@ -39,12 +54,6 @@ async function Vouchers() {
       <p className="mb-4 text-xs tabular-nums text-slate-400">
         As of {new Date().toLocaleString("en-IN")}
       </p>
-
-      {error ? (
-        <div className="mb-6 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
-          {error}
-        </div>
-      ) : null}
 
       <section className="mb-8 grid grid-cols-2 gap-3 sm:grid-cols-4">
         <Stat label="Vouchers" count={vouchers.length} amountPaise={sum(vouchers)} tone="slate" />
@@ -95,6 +104,7 @@ function VouchersSkeleton() {
 }
 
 function VoucherRow({ voucher }: { voucher: Voucher }) {
+  const updated = timeAgo(voucher.updated_at);
   return (
     <li className="rounded-xl border border-slate-200 bg-white px-4 py-3 shadow-sm">
       <div className="flex flex-wrap items-center justify-between gap-3">
@@ -113,7 +123,7 @@ function VoucherRow({ voucher }: { voucher: Voucher }) {
                 · accounting ref <span className="font-mono">{voucher.external_ref}</span>
               </>
             ) : null}
-            {" "}· updated {timeAgo(voucher.updated_at)}
+            {updated ? <> · updated {updated}</> : null}
           </p>
         </div>
         <div className="flex items-center gap-4">
