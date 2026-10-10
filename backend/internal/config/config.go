@@ -21,11 +21,14 @@ type Config struct {
 
 // Load reads configuration from the process environment. Values from a local
 // .env file fill in anything that is not already set; real environment values
-// always win. It looks for .env in the working directory and one level up, so
-// commands run from either the repo root or backend/.
+// always win. The .env search walks up to three directories above the working
+// directory, so commands run from the repo root, backend/, or a nested
+// package directory (as in go test ./...) all find it.
 func Load() (*Config, error) {
 	loadDotEnv(".env")
 	loadDotEnv("../.env")
+	loadDotEnv("../../.env")
+	loadDotEnv("../../../.env")
 
 	cfg := &Config{
 		DatabaseURL:       os.Getenv("DATABASE_URL"),
