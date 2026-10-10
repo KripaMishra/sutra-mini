@@ -16,6 +16,7 @@ type Config struct {
 	AccountingBaseURL     string
 	AccountingTimeout     time.Duration
 	AccountingMaxAttempts int
+	WorkerLease           time.Duration
 	WorkerConcurrency     int
 }
 
@@ -41,6 +42,9 @@ func Load() (*Config, error) {
 		return nil, err
 	}
 	if cfg.AccountingMaxAttempts, err = intOr("ACCOUNTING_MAX_ATTEMPTS", 5); err != nil {
+		return nil, err
+	}
+	if cfg.WorkerLease, err = durationOr("WORKER_LEASE", 15*time.Second); err != nil {
 		return nil, err
 	}
 	if cfg.WorkerConcurrency, err = intOr("WORKER_CONCURRENCY", 4); err != nil {
