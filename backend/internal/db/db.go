@@ -16,6 +16,10 @@ func Connect(ctx context.Context, databaseURL string) (*pgxpool.Pool, error) {
 	if err != nil {
 		return nil, fmt.Errorf("parse DATABASE_URL: %w", err)
 	}
+	// The receipt guard relies on READ COMMITTED statement snapshots (the
+	// trigger rejects stronger isolation outright). Pin it here so no code
+	// path or role setting can silently change the semantics.
+	cfg.ConnConfig.RuntimeParams["default_transaction_isolation"] = "read committed"
 	cfg.MaxConns = 8
 	cfg.MinConns = 0
 	cfg.MaxConnIdleTime = 5 * time.Minute
