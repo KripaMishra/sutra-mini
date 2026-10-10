@@ -127,9 +127,9 @@ seq 1 10 | xargs -P 10 -I{} curl -s -o /dev/null -w '%{http_code}\n' \
 ```
 
 **Crash-safe, two-worker** — start two `worker` processes and `kill -9` one mid-push. It
-leaves only an expiring lease (60 s); the other (or a restarted) worker re-claims the
-voucher and pushes it once — if the killed worker had already reached accounting, the
-duplicate `409` reconciles to the same reference instead of double-posting.
+leaves only an expiring lease (default 15 s, `WORKER_LEASE`); the other (or a restarted)
+worker re-claims the voucher and pushes it once — if the killed worker had already reached
+accounting, the duplicate `409` reconciles to the same reference instead of double-posting.
 
 ## API
 
