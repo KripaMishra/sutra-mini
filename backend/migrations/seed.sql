@@ -16,7 +16,8 @@ FROM (VALUES
     ('Meera Embroidery Works', '+91 98110 22114'),
     ('Rahul Stitching Unit',   '+91 98110 55820')
 ) AS v(name, phone)
-WHERE NOT EXISTS (SELECT 1 FROM parties);
+WHERE NOT EXISTS (SELECT 1 FROM parties)
+ORDER BY v.name;
 
 INSERT INTO jobwork_issues (party_id, sku_id, qty, issued_on)
 SELECT p.id, s.id, v.qty, v.issued_on
@@ -28,4 +29,5 @@ FROM (VALUES
 ) AS v(party, code, qty, issued_on)
 JOIN parties p ON p.name = v.party
 JOIN skus   s ON s.code = v.code
-WHERE NOT EXISTS (SELECT 1 FROM jobwork_issues);
+WHERE NOT EXISTS (SELECT 1 FROM jobwork_issues)
+ORDER BY v.code;
