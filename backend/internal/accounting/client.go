@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 type Client struct {
@@ -66,15 +67,15 @@ func (c *Client) Push(ctx context.Context, clientRef string, amountPaise int64) 
 		return PushResult{}, fmt.Errorf("read response: %w", err)
 	}
 
-	switch resp.StatusCode {
-	case http.StatusOK:
+	switch {
+	case resp.StatusCode/100 == 2:
 		var pr pushResponse
 		if err := json.Unmarshal(payload, &pr); err != nil || pr.ExternalRef == "" {
-			return PushResult{}, fmt.Errorf("accounting returned 200 without external_ref: %s", truncate(payload))
+			return PushResult{}, fmt.Errorf("accounting returned %d without external_ref: %s", resp.StatusCode, truncate(payload))
 		}
 		return PushResult{ExternalRef: pr.ExternalRef}, nil
 
-	case http.StatusConflict:
+	case resp.StatusCode == http.StatusConflict:
 		// Duplicate client_ref: accounting already has this voucher and tells
 		// us its reference. Reconcile instead of double-posting.
 		var pr pushResponse
@@ -92,7 +93,12 @@ func truncate(b []byte) string {
 	const max = 200
 	s := strings.TrimSpace(string(b))
 	if len(s) > max {
-		return s[:max] + "…"
+		// cut on a rune boundary so the result stays valid UTF-8
+		cut := max
+		for cut > 0 && !utf8.RuneStart(s[cut]) {
+			cut--
+		}
+		s = s[:cut] + "…"
 	}
 	return s
 }

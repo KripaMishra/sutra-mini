@@ -14,12 +14,13 @@ type ClaimedVoucher struct {
 	LeaseToken  string
 }
 
-// ClaimVouchers leases up to limit claimable vouchers. Claimable means: still
-// pending, due (next_attempt_at in the past) and not leased by another
-// worker. FOR UPDATE SKIP LOCKED makes concurrent claimers — the same worker
-// loop or a second process — never receive the same row, and a lease that
-// expires (worker crashed mid-push) simply becomes claimable again.
-func (s *Store) ClaimVouchers(ctx context.Context, limit, leaseSeconds int) ([]ClaimedVoucher, error) {
+// ClaimVouchers leases up to limit claimable vouchers of the given type (””
+// claims any type). Claimable means: still pending, due (next_attempt_at in
+// the past) and not leased by another worker. FOR UPDATE SKIP LOCKED makes
+// concurrent claimers — the same worker loop or a second process — never
+// receive the same row, and a lease that expires (worker crashed mid-push)
+// simply becomes claimable again.
+func (s *Store) ClaimVouchers(ctx context.Context, voucherType string, limit, leaseSeconds int) ([]ClaimedVoucher, error) {
 	rows, err := s.pool.Query(ctx, `
 		UPDATE vouchers v
 		   SET lease_until = now() + make_interval(secs => $2),
@@ -30,13 +31,14 @@ func (s *Store) ClaimVouchers(ctx context.Context, limit, leaseSeconds int) ([]C
 		         WHERE status = 'pending'
 		           AND next_attempt_at <= now()
 		           AND (lease_until IS NULL OR lease_until < now())
+		           AND ($3 = '' OR type = $3)
 		         ORDER BY next_attempt_at, id
 		         LIMIT $1
 		           FOR UPDATE SKIP LOCKED
 		       ) AS claimable
 		 WHERE v.id = claimable.id
 		RETURNING v.id, v.client_ref, v.amount_paise, v.attempts, v.lease_token`,
-		limit, leaseSeconds)
+		limit, leaseSeconds, voucherType)
 	if err != nil {
 		return nil, err
 	}

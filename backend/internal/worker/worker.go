@@ -19,6 +19,7 @@ type Options struct {
 	Concurrency  int
 	PollInterval time.Duration
 	Lease        time.Duration
+	VoucherType  string
 }
 
 type Worker struct {
@@ -28,6 +29,7 @@ type Worker struct {
 	concurrency  int
 	poll         time.Duration
 	leaseSeconds int
+	voucherType  string
 	logger       *log.Logger
 }
 
@@ -42,7 +44,10 @@ func New(st *store.Store, ac *accounting.Client, opts Options) *Worker {
 		opts.PollInterval = time.Second
 	}
 	if opts.Lease <= 0 {
-		opts.Lease = 60 * time.Second
+		opts.Lease = 15 * time.Second
+	}
+	if opts.VoucherType == "" {
+		opts.VoucherType = "jobwork_receipt"
 	}
 	return &Worker{
 		store:        st,
@@ -51,7 +56,8 @@ func New(st *store.Store, ac *accounting.Client, opts Options) *Worker {
 		concurrency:  opts.Concurrency,
 		poll:         opts.PollInterval,
 		leaseSeconds: int(opts.Lease / time.Second),
-		logger:       log.New(os.Stdout, "worker ", log.LstdFlags),
+		voucherType:  opts.VoucherType,
+		logger:       log.New(os.Stdout, "worker lease="+opts.Lease.String()+" ", log.LstdFlags),
 	}
 }
 
@@ -61,7 +67,7 @@ func New(st *store.Store, ac *accounting.Client, opts Options) *Worker {
 // killed mid-push leaves only an expiring lease behind.
 func (w *Worker) Run(ctx context.Context) error {
 	for {
-		claimed, err := w.store.ClaimVouchers(ctx, w.concurrency, w.leaseSeconds)
+		claimed, err := w.runOnce(ctx)
 		if err != nil {
 			if ctx.Err() != nil {
 				return ctx.Err()
@@ -72,26 +78,34 @@ func (w *Worker) Run(ctx context.Context) error {
 			}
 			continue
 		}
-		if len(claimed) == 0 {
-			if !sleepCtx(ctx, w.poll) {
-				return ctx.Err()
-			}
-			continue
+		if claimed == 0 && !sleepCtx(ctx, w.poll) {
+			return ctx.Err()
 		}
-		w.pushAll(ctx, claimed)
 	}
 }
 
+// runOnce claims one batch and pushes it, returning how many vouchers were
+// claimed so the caller can keep going while there is work.
+func (w *Worker) runOnce(ctx context.Context) (int, error) {
+	claimed, err := w.store.ClaimVouchers(ctx, w.voucherType, w.concurrency, w.leaseSeconds)
+	if err != nil {
+		return 0, err
+	}
+	if len(claimed) == 0 {
+		return 0, nil
+	}
+	w.pushAll(ctx, claimed)
+	return len(claimed), nil
+}
+
+// pushAll pushes the batch concurrently — the fan-out is bounded by the claim
+// size — so one slow call (the mock's 5s hang) holds up only itself.
 func (w *Worker) pushAll(ctx context.Context, vouchers []store.ClaimedVoucher) {
-	sem := make(chan struct{}, w.concurrency)
 	var wg sync.WaitGroup
 	for _, v := range vouchers {
-		v := v
-		sem <- struct{}{}
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			defer func() { <-sem }()
 			w.push(ctx, v)
 		}()
 	}
@@ -127,7 +141,9 @@ func (w *Worker) push(ctx context.Context, v store.ClaimedVoucher) {
 	if attempt >= w.maxAttempts {
 		if ok, uerr := w.store.MarkFailed(ctx, v.ID, v.LeaseToken, attempt, msg); uerr != nil {
 			w.logger.Printf("voucher %d: mark failed: %v", v.ID, uerr)
-		} else if ok {
+		} else if !ok {
+			w.logger.Printf("voucher %d: lease lost before parking it; another worker owns it now", v.ID)
+		} else {
 			w.logger.Printf("voucher %d: parked as failed after %d attempts: %s", v.ID, attempt, msg)
 		}
 		return
@@ -136,7 +152,9 @@ func (w *Worker) push(ctx context.Context, v store.ClaimedVoucher) {
 	delay := backoff(attempt)
 	if ok, uerr := w.store.MarkRetry(ctx, v.ID, v.LeaseToken, attempt, delay, msg); uerr != nil {
 		w.logger.Printf("voucher %d: mark retry: %v", v.ID, uerr)
-	} else if ok {
+	} else if !ok {
+		w.logger.Printf("voucher %d: lease lost before scheduling a retry; another worker owns it now", v.ID)
+	} else {
 		w.logger.Printf("voucher %d: attempt %d failed (%s), retrying in %s", v.ID, attempt, msg, delay)
 	}
 }
