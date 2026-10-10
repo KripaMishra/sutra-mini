@@ -1,0 +1,23 @@
+# Secrets — never commit real values, only .env.example
+.env
+.env.local
+.env.*.local
+
+# Go
+bin/
+*.test
+*.out
+coverage.out
+
+# Node / Next.js
+node_modules/
+.next/
+out/
+npm-debug.log*
+yarn-error.log*
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/
+*.swp
