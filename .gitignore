@@ -22,3 +22,7 @@ yarn-error.log*
 .vscode/
 *.swp
 .neon
+
+# Agent tooling — installed per machine, not part of the submission
+.agents/
+.claude/
