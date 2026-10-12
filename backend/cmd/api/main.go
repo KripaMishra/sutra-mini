@@ -11,6 +11,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/KripaMishra/sutra-mini/backend/internal/ask"
 	"github.com/KripaMishra/sutra-mini/backend/internal/config"
 	"github.com/KripaMishra/sutra-mini/backend/internal/db"
 	"github.com/KripaMishra/sutra-mini/backend/internal/httpapi"
@@ -34,12 +35,29 @@ func main() {
 	}
 	defer pool.Close()
 
+	askSvc, err := ask.New(ask.Config{
+		APIKey:      cfg.LLMAPIKey,
+		Model:       cfg.LLMModel,
+		BaseURL:     cfg.LLMBaseURL,
+		Concurrency: cfg.AskConcurrency,
+		QueueDepth:  cfg.AskQueueDepth,
+		QueueWait:   cfg.AskQueueWait,
+	}, cfg.DatabaseURL)
+	if err != nil {
+		log.Fatalf("ask: %v", err)
+	}
+	if why := askSvc.Disabled(); why != "" {
+		// Not fatal: every other endpoint works, and /ask answers 503 naming
+		// the missing variable.
+		log.Printf("ask: disabled: %s", why)
+	}
+
 	srv := &http.Server{
 		Addr:              ":" + cfg.Port,
-		Handler:           httpapi.New(pool),
+		Handler:           httpapi.New(pool, httpapi.WithAsk(askSvc)),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
-		WriteTimeout:      35 * time.Second, // above the handler timeout so chi can still write its 504
+		WriteTimeout:      65 * time.Second, // above /ask's 60s budget so chi can still write its 504
 		IdleTimeout:       60 * time.Second,
 	}
 
@@ -57,5 +75,13 @@ func main() {
 	defer cancel()
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		log.Printf("shutdown: %v", err)
+	}
+
+	// Only after the HTTP server has drained: a request still waiting on its
+	// answer should get one instead of watching the workers disappear.
+	askCtx, askCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer askCancel()
+	if err := askSvc.Close(askCtx); err != nil {
+		log.Printf("ask shutdown: %v", err)
 	}
 }
