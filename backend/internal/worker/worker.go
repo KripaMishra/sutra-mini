@@ -10,8 +10,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/kripa5661/srs/backend/internal/accounting"
-	"github.com/kripa5661/srs/backend/internal/store"
+	"github.com/KripaMishra/sutra-mini/backend/internal/accounting"
+	"github.com/KripaMishra/sutra-mini/backend/internal/store"
 )
 
 type Options struct {

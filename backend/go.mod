@@ -1,4 +1,4 @@
-module github.com/kripa5661/srs/backend
+module github.com/KripaMishra/sutra-mini/backend
 
 go 1.25.0
 

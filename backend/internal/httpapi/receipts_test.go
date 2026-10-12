@@ -20,9 +20,9 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/kripa5661/srs/backend/internal/config"
-	"github.com/kripa5661/srs/backend/internal/db"
-	"github.com/kripa5661/srs/backend/internal/httpapi"
+	"github.com/KripaMishra/sutra-mini/backend/internal/config"
+	"github.com/KripaMishra/sutra-mini/backend/internal/db"
+	"github.com/KripaMishra/sutra-mini/backend/internal/httpapi"
 )
 
 var testPool *pgxpool.Pool

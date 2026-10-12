@@ -9,7 +9,7 @@ import (
 	"net/http"
 	"os"
 
-	"github.com/kripa5661/srs/backend/internal/mockacct"
+	"github.com/KripaMishra/sutra-mini/backend/internal/mockacct"
 )
 
 func main() {

@@ -18,10 +18,10 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/kripa5661/srs/backend/internal/accounting"
-	"github.com/kripa5661/srs/backend/internal/config"
-	"github.com/kripa5661/srs/backend/internal/db"
-	"github.com/kripa5661/srs/backend/internal/store"
+	"github.com/KripaMishra/sutra-mini/backend/internal/accounting"
+	"github.com/KripaMishra/sutra-mini/backend/internal/config"
+	"github.com/KripaMishra/sutra-mini/backend/internal/db"
+	"github.com/KripaMishra/sutra-mini/backend/internal/store"
 )
 
 const testVoucherType = "wtest"

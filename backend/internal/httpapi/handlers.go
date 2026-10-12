@@ -10,7 +10,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
-	"github.com/kripa5661/srs/backend/internal/store"
+	"github.com/KripaMishra/sutra-mini/backend/internal/store"
 )
 
 type createReceiptRequest struct {

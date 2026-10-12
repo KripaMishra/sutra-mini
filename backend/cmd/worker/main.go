@@ -9,11 +9,11 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/kripa5661/srs/backend/internal/accounting"
-	"github.com/kripa5661/srs/backend/internal/config"
-	"github.com/kripa5661/srs/backend/internal/db"
-	"github.com/kripa5661/srs/backend/internal/store"
-	"github.com/kripa5661/srs/backend/internal/worker"
+	"github.com/KripaMishra/sutra-mini/backend/internal/accounting"
+	"github.com/KripaMishra/sutra-mini/backend/internal/config"
+	"github.com/KripaMishra/sutra-mini/backend/internal/db"
+	"github.com/KripaMishra/sutra-mini/backend/internal/store"
+	"github.com/KripaMishra/sutra-mini/backend/internal/worker"
 )
 
 func main() {
