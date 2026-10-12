@@ -351,7 +351,10 @@ func TestReceiptsFillToTheBoundaryThenStop(t *testing.T) {
 
 // TestIssueProgressAndVoucherRetry covers the read and retry endpoints: the
 // issued/received/outstanding math, the status filter, and the failed →
-// pending retry contract (including the 409 for non-failed vouchers).
+// pending retry contract (including the 409 for non-failed vouchers). The list
+// checks compare against the database rather than assuming the fixture stays
+// pending, so a worker running against the same database cannot make them
+// flake — the filter is wrong only when the two disagree.
 func TestIssueProgressAndVoucherRetry(t *testing.T) {
 	type voucherRow struct {
 		ID        int64  `json:"id"`
@@ -406,26 +409,57 @@ func TestIssueProgressAndVoucherRetry(t *testing.T) {
 		return list.Vouchers
 	}
 
-	found := false
-	for _, v := range listPending() {
-		if v.ID == created.Voucher.ID {
-			found = true
+	// The list checks below are consistency assertions, not idleness
+	// assertions: this database is shared with whatever else is running, and
+	// a worker may claim and push a fixture between any two calls. The filter
+	// is wrong only when the list and the database disagree.
+	checkPendingList := func(when string) {
+		t.Helper()
+		list := listPending()
+		for _, v := range list {
+			if v.Status != "pending" {
+				t.Errorf("%s: status=pending list contains voucher %d with status %q", when, v.ID, v.Status)
+			}
+		}
+		found := false
+		for _, v := range list {
+			if v.ID == created.Voucher.ID {
+				found = true
+			}
+		}
+		var dbStatus string
+		if err := testPool.QueryRow(context.Background(),
+			`SELECT status FROM vouchers WHERE id = $1`, created.Voucher.ID).Scan(&dbStatus); err != nil {
+			t.Fatalf("%s: load status: %v", when, err)
+		}
+		// A row that is pending in the database but missing from the list is a
+		// broken filter. The reverse mismatch is not an error: it means a
+		// worker pushed the voucher between the list call and this query.
+		if dbStatus == "pending" && !found {
+			t.Errorf("%s: voucher %d is pending in the database but missing from the status=pending list",
+				when, created.Voucher.ID)
 		}
 	}
-	if !found {
-		t.Errorf("voucher %d missing from status=pending list", created.Voucher.ID)
-	}
+	checkPendingList("freshly created")
 
-	retry := func() int {
+	retry := func() (int, voucherRow) {
 		t.Helper()
 		res, err := srv.Client().Post(fmt.Sprintf("%s/vouchers/%d/retry", srv.URL, created.Voucher.ID), "", nil)
 		if err != nil {
 			t.Fatalf("retry: %v", err)
 		}
 		defer res.Body.Close()
-		return res.StatusCode
+		var body struct {
+			Voucher voucherRow `json:"voucher"`
+		}
+		if res.StatusCode == http.StatusOK {
+			if err := json.NewDecoder(res.Body).Decode(&body); err != nil {
+				t.Fatalf("decode retry response: %v", err)
+			}
+		}
+		return res.StatusCode, body.Voucher
 	}
-	if code := retry(); code != http.StatusConflict {
+	if code, _ := retry(); code != http.StatusConflict {
 		t.Errorf("retry on a pending voucher: status %d, want 409", code)
 	}
 
@@ -436,24 +470,18 @@ func TestIssueProgressAndVoucherRetry(t *testing.T) {
 		created.Voucher.ID); err != nil {
 		t.Fatalf("park voucher: %v", err)
 	}
-	if code := retry(); code != http.StatusOK {
+	// The retry response is one atomic UPDATE ... RETURNING, so these
+	// assertions cannot be raced.
+	code, retried := retry()
+	if code != http.StatusOK {
 		t.Fatalf("retry on a failed voucher: status %d, want 200", code)
 	}
+	if retried.Status != "pending" || retried.Attempts != 0 {
+		t.Errorf("after retry: status=%q attempts=%d, want pending/0", retried.Status, retried.Attempts)
+	}
+	if retried.LastError != "injected failure" {
+		t.Errorf("after retry: last_error=%q, want the previous reason to stay visible", retried.LastError)
+	}
 
-	seen := false
-	for _, v := range listPending() {
-		if v.ID != created.Voucher.ID {
-			continue
-		}
-		seen = true
-		if v.Status != "pending" || v.Attempts != 0 {
-			t.Errorf("after retry: status=%q attempts=%d, want pending/0", v.Status, v.Attempts)
-		}
-		if v.LastError != "injected failure" {
-			t.Errorf("after retry: last_error=%q, want the previous reason to stay visible", v.LastError)
-		}
-	}
-	if !seen {
-		t.Errorf("retried voucher %d not back in the pending list", created.Voucher.ID)
-	}
+	checkPendingList("after retry")
 }

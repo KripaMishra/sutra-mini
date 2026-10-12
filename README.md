@@ -149,7 +149,8 @@ accounting, the duplicate `409` reconciles to the same reference instead of doub
 ## Tests
 
 The guarantees are integration-tested against the real Postgres from `.env`; each test
-creates and removes its own rows:
+creates and removes its own rows, and the checks compare against the database instead of
+assuming nothing else is moving — so `make test` is safe to run while the demo stack is up:
 
 ```sh
 make test
