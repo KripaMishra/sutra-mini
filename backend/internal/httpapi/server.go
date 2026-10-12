@@ -32,7 +32,13 @@ func New(pool *pgxpool.Pool) http.Handler {
 			next.ServeHTTP(w, req)
 		})
 	})
-	r.Use(middleware.RealIP)
+	// ClientIPFromRemoteAddr is the non-spoofable replacement for the
+	// deprecated middleware.RealIP (GHSA-3fxj-6jh8-hvhx and friends): it
+	// records the socket peer address and never trusts X-Forwarded-For /
+	// X-Real-IP / True-Client-IP. This service runs without a trusted proxy;
+	// if one is ever put in front, swap in middleware.ClientIPFromXFF with
+	// the proxy's ranges.
+	r.Use(middleware.ClientIPFromRemoteAddr)
 	r.Use(middleware.Logger)
 	r.Use(middleware.Recoverer)
 	r.Use(middleware.Timeout(30 * time.Second))
