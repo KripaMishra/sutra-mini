@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -164,5 +165,182 @@ func TestBackoffSchedule(t *testing.T) {
 		if got := backoff(i + 1); got != wnt {
 			t.Errorf("backoff(%d) = %s, want %s", i+1, got, wnt)
 		}
+	}
+}
+
+// TestTwoLoopsPushEachVoucherExactlyOnce runs two full worker loops side by
+// side — which the database cannot distinguish from two processes — and
+// proves every voucher is posted to accounting exactly once, whichever loop
+// claims it.
+func TestTwoLoopsPushEachVoucherExactlyOnce(t *testing.T) {
+	const n = 8
+	ctx := context.Background()
+	prefix := "wtest-" + t.Name() + "-%"
+
+	var mu sync.Mutex
+	hits := map[string]int{}
+	stub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			ClientRef string `json:"client_ref"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		mu.Lock()
+		hits[req.ClientRef]++
+		mu.Unlock()
+		_ = json.NewEncoder(w).Encode(map[string]string{"external_ref": "REF-" + req.ClientRef})
+	}))
+	defer stub.Close()
+
+	ids := make([]int64, n)
+	for i := range ids {
+		ids[i] = insertPendingVoucher(t)
+	}
+
+	loops := []*Worker{
+		New(store.New(testPool), accounting.NewClient(stub.URL, 2*time.Second), Options{
+			MaxAttempts: 3, Concurrency: 2, PollInterval: 50 * time.Millisecond, VoucherType: testVoucherType,
+		}),
+		New(store.New(testPool), accounting.NewClient(stub.URL, 2*time.Second), Options{
+			MaxAttempts: 3, Concurrency: 2, PollInterval: 50 * time.Millisecond, VoucherType: testVoucherType,
+		}),
+	}
+
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	returned := make(chan error, len(loops))
+	for _, w := range loops {
+		go func(w *Worker) { returned <- w.Run(runCtx) }(w)
+	}
+
+	deadline := time.Now().Add(15 * time.Second)
+	for {
+		var pushed int
+		if err := testPool.QueryRow(ctx,
+			`SELECT count(*) FROM vouchers WHERE client_ref LIKE $1 AND status = 'pushed'`, prefix).Scan(&pushed); err != nil {
+			t.Fatalf("count pushed: %v", err)
+		}
+		if pushed == n {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("only %d of %d vouchers pushed after 15s", pushed, n)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	cancel()
+	for range loops {
+		select {
+		case <-returned:
+		case <-time.After(5 * time.Second):
+			t.Fatal("a worker loop did not stop after cancel")
+		}
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(hits) != n {
+		t.Errorf("accounting was asked about %d distinct vouchers, want %d", len(hits), n)
+	}
+	for ref, count := range hits {
+		if count != 1 {
+			t.Errorf("client_ref %s was pushed %d times, want exactly once", ref, count)
+		}
+	}
+	for _, id := range ids {
+		var status, clientRef, externalRef string
+		if err := testPool.QueryRow(ctx,
+			`SELECT status, client_ref, external_ref FROM vouchers WHERE id = $1`, id).
+			Scan(&status, &clientRef, &externalRef); err != nil {
+			t.Fatalf("load voucher %d: %v", id, err)
+		}
+		if status != "pushed" {
+			t.Errorf("voucher %d status %q, want pushed", id, status)
+		}
+		if externalRef != "REF-"+clientRef {
+			t.Errorf("voucher %d external_ref %q, want %q", id, externalRef, "REF-"+clientRef)
+		}
+	}
+}
+
+// TestSlowPushDoesNotStallSiblings holds one push inside a hanging HTTP call
+// and proves the rest of the batch still lands — the mock's five-second hang
+// must cost one five-second wait, not five seconds of head-of-line blocking.
+func TestSlowPushDoesNotStallSiblings(t *testing.T) {
+	ctx := context.Background()
+
+	slowID := insertPendingVoucher(t)
+	fastID := insertPendingVoucher(t)
+	var slowRef string
+	if err := testPool.QueryRow(ctx, `SELECT client_ref FROM vouchers WHERE id = $1`, slowID).Scan(&slowRef); err != nil {
+		t.Fatalf("load client_ref: %v", err)
+	}
+
+	release := make(chan struct{})
+	started := make(chan struct{})
+	var startedOnce sync.Once
+	stub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			ClientRef string `json:"client_ref"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		if req.ClientRef == slowRef {
+			startedOnce.Do(func() { close(started) })
+			select {
+			case <-release:
+			case <-r.Context().Done():
+				return
+			}
+		}
+		_ = json.NewEncoder(w).Encode(map[string]string{"external_ref": "REF-" + req.ClientRef})
+	}))
+	defer stub.Close()
+
+	w := New(store.New(testPool), accounting.NewClient(stub.URL, 5*time.Second), Options{
+		MaxAttempts: 3, Concurrency: 4, VoucherType: testVoucherType,
+	})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		if _, err := w.runOnce(ctx); err != nil {
+			t.Errorf("runOnce: %v", err)
+		}
+	}()
+
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the slow push never reached the stub")
+	}
+
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		var status string
+		if err := testPool.QueryRow(ctx, `SELECT status FROM vouchers WHERE id = $1`, fastID).Scan(&status); err != nil {
+			t.Fatalf("load status: %v", err)
+		}
+		if status == "pushed" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("voucher %d still %q while the slow push is held — the batch is head-of-line blocked", fastID, status)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	close(release)
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("runOnce did not finish after the slow call was released")
+	}
+
+	var status, externalRef string
+	if err := testPool.QueryRow(ctx, `SELECT status, external_ref FROM vouchers WHERE id = $1`, slowID).
+		Scan(&status, &externalRef); err != nil {
+		t.Fatalf("load slow voucher: %v", err)
+	}
+	if status != "pushed" || externalRef != "REF-"+slowRef {
+		t.Errorf("slow voucher ended status=%q external_ref=%q, want pushed with REF-%s", status, externalRef, slowRef)
 	}
 }
