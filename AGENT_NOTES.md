@@ -106,7 +106,7 @@ Those three are kept explicit below.
   `go test ./...` green against the Postgres in `.env`; shipped as `40833c3`/`1c32091` on
   `feat/ask`, merged to `main` (`396f98a`).
 
-### 2026-10-12 — Review pass on `/ask` (before the author's own read)
+### 2026-10-12 — Review pass on `/ask`
 
 - Ran four parallel reviewer agents over `c304146..d546d22` (concurrency/lifecycle, SQL and
   read-only semantics, HTTP/config/hygiene, tests-and-claims). They reproduced failures
