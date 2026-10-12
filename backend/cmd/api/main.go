@@ -44,11 +44,13 @@ func main() {
 		QueueWait:   cfg.AskQueueWait,
 	}, cfg.DatabaseURL)
 	if err != nil {
-		log.Fatalf("ask: %v", err)
+		// /ask is optional: a bad ASK_* value or a database problem on that one
+		// read pool must not take receipts and vouchers down with it. The detail
+		// stays in the log — a connection error can name the database host.
+		log.Printf("ask: disabled: %v", err)
+		askSvc = ask.Unavailable("ask is not configured correctly; see the server log")
 	}
 	if why := askSvc.Disabled(); why != "" {
-		// Not fatal: every other endpoint works, and /ask answers 503 naming
-		// the missing variable.
 		log.Printf("ask: disabled: %s", why)
 	}
 
@@ -71,17 +73,18 @@ func main() {
 	<-ctx.Done()
 	log.Println("shutting down")
 
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	if err := srv.Shutdown(shutdownCtx); err != nil {
-		log.Printf("shutdown: %v", err)
-	}
-
-	// Only after the HTTP server has drained: a request still waiting on its
-	// answer should get one instead of watching the workers disappear.
+	// Stop /ask first: a question is not durable work, so queued ones are
+	// refused and in-flight ones cancelled rather than holding shutdown open for
+	// up to the /ask budget. The HTTP server then drains what is left.
 	askCtx, askCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer askCancel()
 	if err := askSvc.Close(askCtx); err != nil {
 		log.Printf("ask shutdown: %v", err)
+	}
+
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := srv.Shutdown(shutdownCtx); err != nil {
+		log.Printf("shutdown: %v", err)
 	}
 }

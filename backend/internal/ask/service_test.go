@@ -74,8 +74,10 @@ func TestQueueKeepsExactlyThreeInFlight(t *testing.T) {
 	if !errors.Is(err, ErrBusy) {
 		t.Fatalf("want ErrBusy once the queue is full, got %v", err)
 	}
-	if waited := time.Since(started); waited < 250*time.Millisecond {
-		t.Fatalf("ErrBusy came back after %s — the wait budget was not honoured", waited)
+	// Bounded on both sides: too fast means the budget was not honoured, and
+	// much too slow means the wait is not the configured one.
+	if waited := time.Since(started); waited < 250*time.Millisecond || waited > 2*time.Second {
+		t.Fatalf("ErrBusy came back after %s, want roughly the 300ms wait budget", waited)
 	}
 
 	close(gate)
@@ -136,16 +138,26 @@ func TestNewReportsMissingVariablesInsteadOfFailing(t *testing.T) {
 
 func TestNewValidatesQueueSettings(t *testing.T) {
 	base := Config{APIKey: "k", Model: "m", BaseURL: "http://127.0.0.1:1/v1", Concurrency: 3, QueueDepth: 1, QueueWait: time.Second}
-	mutations := map[string]func(*Config){
-		"no concurrency": func(c *Config) { c.Concurrency = 0 },
-		"negative depth": func(c *Config) { c.QueueDepth = -1 },
-		"no wait":        func(c *Config) { c.QueueWait = 0 },
+	// The messages matter: without asserting them, this test also passes when the
+	// validation is gone and the failure comes from the unreachable database URL
+	// below (which is exactly what a mutated build showed).
+	mutations := map[string]struct {
+		mutate func(*Config)
+		want   string
+	}{
+		"no concurrency": {func(c *Config) { c.Concurrency = 0 }, "concurrency"},
+		"negative depth": {func(c *Config) { c.QueueDepth = -1 }, "queue depth"},
+		"no wait":        {func(c *Config) { c.QueueWait = 0 }, "queue wait"},
 	}
-	for name, mutate := range mutations {
+	for name, tc := range mutations {
 		cfg := base
-		mutate(&cfg)
-		if _, err := New(cfg, "postgres://example/db"); err == nil {
+		tc.mutate(&cfg)
+		_, err := New(cfg, "postgres://example/db")
+		if err == nil {
 			t.Fatalf("%s: want a configuration error", name)
+		}
+		if !strings.Contains(err.Error(), tc.want) {
+			t.Fatalf("%s: error = %v, want it to name %q", name, err, tc.want)
 		}
 	}
 }

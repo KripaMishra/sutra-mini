@@ -32,7 +32,7 @@ func readToolDefs() []llms.Tool {
 			Type: "function",
 			Function: &llms.FunctionDefinition{
 				Name:        toolFindSkus,
-				Description: "Find SKUs by a partial code or name (case-insensitive). Returns every match with its id, code, name and rate in paise.",
+				Description: "Find SKUs by a partial code or name (case-insensitive). Returns up to 20 matches with id, code, name and rate in paise; total_matched says how many matched in all.",
 				Parameters: map[string]any{
 					"type":       "object",
 					"properties": map[string]any{"query": stringProp(`substring of the SKU code or name, e.g. "CHK-01" or "chikan"`)},
@@ -44,7 +44,7 @@ func readToolDefs() []llms.Tool {
 			Type: "function",
 			Function: &llms.FunctionDefinition{
 				Name:        toolFindJobWorkers,
-				Description: "Find job-workers (parties) by a partial name or phone (case-insensitive). Returns every match with its id, name and phone. Names are not unique.",
+				Description: "Find job-workers (parties) by a partial name or phone (case-insensitive). Returns up to 20 matches with id and name, plus total_matched for the full count; contact details are never returned. Names are not unique, so use the id.",
 				Parameters: map[string]any{
 					"type":       "object",
 					"properties": map[string]any{"query": stringProp(`substring of the job-worker name or phone, e.g. "meera"`)},
@@ -56,7 +56,7 @@ func readToolDefs() []llms.Tool {
 			Type: "function",
 			Function: &llms.FunctionDefinition{
 				Name:        toolStockWithJobWorker,
-				Description: "How much of one SKU is still with one job-worker: issued, received and still_with (pieces) for the matching pairs. This is the tool for questions like \"how much of SKU X is still with job-worker Y\".",
+				Description: "How much of one SKU is still with one job-worker: issued, received and still_with (pieces) for the matching pairs, keyed by job_worker_id and sku_id. This is the tool for questions like \"how much of SKU X is still with job-worker Y\". Two workers sharing a name appear as separate rows; check the note.",
 				Parameters: map[string]any{
 					"type": "object",
 					"properties": map[string]any{
@@ -71,7 +71,7 @@ func readToolDefs() []llms.Tool {
 			Type: "function",
 			Function: &llms.FunctionDefinition{
 				Name:        toolStockBySKU,
-				Description: "Rollup of one SKU across every job-worker holding it: issued, received and still_with per job-worker.",
+				Description: "Rollup of one SKU across the job-workers holding it: issued, received and still_with per job-worker, up to 50 rows (check truncated and matched_pairs).",
 				Parameters: map[string]any{
 					"type":       "object",
 					"properties": map[string]any{"sku": stringProp("SKU code or partial name")},
@@ -83,7 +83,7 @@ func readToolDefs() []llms.Tool {
 			Type: "function",
 			Function: &llms.FunctionDefinition{
 				Name:        toolStockByJobWorker,
-				Description: "Rollup of one job-worker across every SKU they hold: issued, received and still_with per SKU.",
+				Description: "Rollup of one job-worker across the SKUs they hold: issued, received and still_with per SKU, up to 50 rows (check truncated and matched_pairs).",
 				Parameters: map[string]any{
 					"type":       "object",
 					"properties": map[string]any{"job_worker": stringProp("job-worker name or partial name")},

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
@@ -43,12 +44,23 @@ func (s *Server) handleAsk(w http.ResponseWriter, r *http.Request) {
 
 	var req askRequest
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
+		var tooLarge *http.MaxBytesError
+		if errors.As(err, &tooLarge) {
+			writeError(w, http.StatusRequestEntityTooLarge, "request body is too large")
+			return
+		}
 		writeError(w, http.StatusBadRequest, "invalid JSON body")
 		return
 	}
 	req.Question = strings.TrimSpace(req.Question)
 	if req.Question == "" {
 		writeError(w, http.StatusBadRequest, "question is required")
+		return
+	}
+	if len(req.Question) > maxQuestionBytes {
+		// Everything here is paid for by the token: a question is a sentence or
+		// two, not a megabyte of prompt.
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("question must be at most %d characters", maxQuestionBytes))
 		return
 	}
 
@@ -73,6 +85,9 @@ func (s *Server) handleAsk(w http.ResponseWriter, r *http.Request) {
 	case errors.Is(err, ask.ErrUnavailable):
 		writeError(w, http.StatusServiceUnavailable, err.Error())
 	case errors.Is(err, ask.ErrBusy):
+		// A short backoff: the queue usually clears well inside ASK_QUEUE_WAIT,
+		// and a client that retries should not be told to sit out the whole wait
+		// budget for a slot that may free up immediately.
 		w.Header().Set("Retry-After", "5")
 		writeError(w, http.StatusTooManyRequests, err.Error())
 	case errors.Is(err, ask.ErrModel):
@@ -83,12 +98,19 @@ func (s *Server) handleAsk(w http.ResponseWriter, r *http.Request) {
 		// the client sees a timeout rather than an empty 200.
 		writeError(w, http.StatusGatewayTimeout, "ask timed out before the model finished")
 	case errors.Is(err, context.Canceled):
-		// The client went away; there is nobody to answer.
+		// The client hung up, or shutdown cancelled the question. Say so rather
+		// than returning an empty 200 nobody can interpret.
+		writeError(w, http.StatusServiceUnavailable, "ask was cancelled before the model finished")
 	default:
 		logInternal("ask", err)
 		writeError(w, http.StatusInternalServerError, "internal error")
 	}
 }
 
-// askTimeout is the /ask budget: queue wait plus a few model turns.
-const askTimeout = 60 * time.Second
+const (
+	// maxQuestionBytes bounds what one question may cost the model.
+	maxQuestionBytes = 2000
+	// askTimeout is the /ask budget: queue wait plus a few model turns. It must
+	// stay above ASK_QUEUE_WAIT plus one model turn; see .env.example.
+	askTimeout = 60 * time.Second
+)

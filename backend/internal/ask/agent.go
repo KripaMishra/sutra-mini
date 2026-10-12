@@ -20,6 +20,9 @@ const (
 	// (the read-only statement timeout inside it is 5s).
 	turnTimeout = 25 * time.Second
 	toolTimeout = 8 * time.Second
+	// maxToolCallsPerTurn bounds one model turn: maxSteps bounds the turns, and
+	// without this a single response asking for fifty tools would run all fifty.
+	maxToolCallsPerTurn = 8
 	// traceArgLimit and traceResultLimit bound what the response body carries;
 	// payloads beyond them fall back to a truncated string.
 	traceArgLimit    = 400
@@ -60,11 +63,13 @@ Schema (Postgres), which is all you can read:
   skus(id, code UNIQUE, name, rate_paise)
   parties(id, name, phone)                          -- job-workers; names are NOT unique
   jobwork_issues(id, party_id -> parties.id, sku_id -> skus.id, qty, issued_on)
-  jobwork_receipts(id, issue_id -> jobwork_issues.id, qty, received_on)  -- append-only; receipts never exceed what was issued
+  jobwork_receipts(id, issue_id -> jobwork_issues.id, qty, received_on)  -- one row per returned batch; the app never updates or deletes them, and receipts never exceed what was issued
 
 Rules:
 - Answer "how much of SKU X is still with job-worker Y" as sum(issued) - sum(received) for that pair; the stock tools compute exactly that.
 - Resolve codes and names with the tools before quoting numbers, and prefer stock_with_job_worker for the headline question.
+- Tool results carry ids (job_worker_id, sku_id): use them when names repeat, and never merge two workers that happen to share a name.
+- Respect the note field in a tool result, and total_matched / truncated: a capped list is not a complete answer.
 - If a lookup matches several rows, say which row you used; if it matches none, say you could not find it instead of guessing.
 - Quote the numbers you used (issued, received, still_with) and the unit (pieces).
 - Your access is read-only: you cannot change data, and you must never claim to have done so.
@@ -82,9 +87,20 @@ func (s *Service) run(ctx context.Context, question string) (Answer, error) {
 	}
 
 	for step := 1; step <= maxSteps; step++ {
-		turnCtx, cancel := context.WithTimeout(ctx, turnTimeout)
-		response, err := s.model.GenerateContent(turnCtx, messages, llms.WithTools(s.defs))
-		cancel()
+		var choice *llms.ContentChoice
+		err := func() error {
+			turnCtx, cancel := context.WithTimeout(ctx, turnTimeout)
+			defer cancel()
+			response, err := s.model.GenerateContent(turnCtx, messages, llms.WithTools(s.defs))
+			if err != nil {
+				return err
+			}
+			if len(response.Choices) == 0 {
+				return fmt.Errorf("%w: empty response", ErrModel)
+			}
+			choice = response.Choices[0]
+			return nil
+		}()
 		if err != nil {
 			s.logf(ctx, "llm turn=%d failed after %s: %v", step, time.Since(started).Round(time.Millisecond), err)
 			// A cancelled or timed-out request is not a model failure: let the
@@ -94,10 +110,6 @@ func (s *Service) run(ctx context.Context, question string) (Answer, error) {
 			}
 			return answer, fmt.Errorf("%w: %v", ErrModel, err)
 		}
-		if len(response.Choices) == 0 {
-			return answer, fmt.Errorf("%w: empty response", ErrModel)
-		}
-		choice := response.Choices[0]
 
 		if len(choice.ToolCalls) == 0 {
 			answer.Text = strings.TrimSpace(choice.Content)
@@ -111,7 +123,9 @@ func (s *Service) run(ctx context.Context, question string) (Answer, error) {
 
 		// Echo the assistant turn back. Prefer the provider's raw parts when it
 		// supplies them (they can carry reasoning blocks that must round-trip);
-		// otherwise rebuild the tool calls.
+		// otherwise rebuild the tool calls — skipping any call the provider left
+		// without a function, so the transcript stays consistent with the tool
+		// responses below.
 		assistantParts := choice.Parts
 		if len(assistantParts) == 0 {
 			for _, call := range choice.ToolCalls {
@@ -124,9 +138,21 @@ func (s *Service) run(ctx context.Context, question string) (Answer, error) {
 			messages = append(messages, llms.MessageContent{Role: llms.ChatMessageTypeAI, Parts: assistantParts})
 		}
 
-		for _, call := range choice.ToolCalls {
+		// One model turn may ask for many tools; execute a bounded number and
+		// tell the model about the rest instead of running for as long as it asks.
+		for index, call := range choice.ToolCalls {
+			if index >= maxToolCallsPerTurn {
+				answer.ToolCalls = append(answer.ToolCalls, s.rejectedToolCall(ctx, call))
+				continue
+			}
 			record := s.runTool(ctx, call)
 			answer.ToolCalls = append(answer.ToolCalls, record)
+			// A call with no function name cannot be answered with a tool
+			// message (providers reject responses for unknown ids), so it stays
+			// in the trace only and the loop moves on.
+			if record.Name == "" {
+				continue
+			}
 			messages = append(messages, llms.MessageContent{
 				Role: llms.ChatMessageTypeTool,
 				Parts: []llms.ContentPart{llms.ToolCallResponse{
@@ -170,6 +196,21 @@ func (s *Service) runTool(ctx context.Context, call llms.ToolCall) ToolCallRecor
 
 	s.logf(ctx, "tool=%s dur=%dms args=%s err=%v result=%s",
 		record.Name, record.DurationMS, truncate(args, traceArgLimit), record.Error, truncate(record.fullResult, 300))
+	return record
+}
+
+// rejectedToolCall records, without executing, a tool call beyond
+// maxToolCallsPerTurn: the refusal is logged and traced so the cap is visible
+// instead of silent.
+func (s *Service) rejectedToolCall(ctx context.Context, call llms.ToolCall) ToolCallRecord {
+	record := ToolCallRecord{Error: fmt.Sprintf("refused: at most %d tool calls are run per model turn", maxToolCallsPerTurn)}
+	if call.FunctionCall != nil {
+		record.Name = call.FunctionCall.Name
+		record.Args = tracePayload(call.FunctionCall.Arguments, traceArgLimit)
+	}
+	record.Result = json.RawMessage(`{"error":"tool call not executed: per-turn tool-call limit reached"}`)
+	record.fullResult = string(record.Result)
+	s.logf(ctx, "tool=%s refused: per-turn limit of %d reached", record.Name, maxToolCallsPerTurn)
 	return record
 }
 

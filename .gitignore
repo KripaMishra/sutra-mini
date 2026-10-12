@@ -26,3 +26,6 @@ yarn-error.log*
 # Agent tooling — installed per machine, not part of the submission
 .agents/
 .claude/
+.commandcode/
+.code-review-graph/
+.pi/

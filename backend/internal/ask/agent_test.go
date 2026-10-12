@@ -148,7 +148,7 @@ func TestRunExecutesToolsAndLogsEveryCall(t *testing.T) {
 		if call.Error != "" {
 			t.Fatalf("unexpected tool error in %+v", call)
 		}
-		if call.DurationMS < 0 || len(call.Args) == 0 {
+		if len(call.Args) == 0 {
 			t.Fatalf("tool call not fully traced: %+v", call)
 		}
 	}
