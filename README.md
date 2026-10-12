@@ -58,6 +58,7 @@ Where each guarantee lives:
 
 ```
 SRS/
+├── Makefile          one place to run everything (`make help`)
 ├── backend/          Go module: API, sync worker, mock accounting, migrations, tests
 ├── web/              Next.js app: the /sync page
 ├── docs/             the brief, verbatim + as a checklist
@@ -82,23 +83,27 @@ cp .env.example .env    # fill in DATABASE_URL (e.g. the pooled Neon connection 
 Apply the schema and seed the brief's data (5 SKUs, 2 job-workers, 4 open issues):
 
 ```sh
-cd backend
-go run ./cmd/migrate -seed -check
+make migrate           # schema + seed, then prints the row counts (idempotent)
 ```
 
 ## Run it
 
-Four processes, all reading the repo's `.env`:
-
 ```sh
-cd backend && go run ./cmd/api             # API on :8080
-cd backend && go run ./cmd/mockaccounting  # the flaky accounting API on :8090
-cd backend && go run ./cmd/worker          # pushes pending vouchers
+make dev    # api + mock + worker + web together — Ctrl-C stops them all
 ```
 
+Or run the pieces individually:
+
 ```sh
-cd web && npm install && npm run dev       # the /sync page on :3000
+make api      # API on :8080
+make mock     # the flaky accounting API on :8090
+make worker   # pushes pending vouchers
+make web      # the /sync page on :3000 (installs npm dependencies on first run)
 ```
+
+All of them read the repo's `.env`; under the hood these are `go run ./cmd/...` in
+`backend/` and `npm run dev` in `web/`. `make help` lists every target, including `test`
+and `build`.
 
 Open http://localhost:3000/sync — vouchers grouped by status with attempt counts, failure
 reasons, and a Retry button. Press `R` to refresh.
@@ -147,7 +152,7 @@ The guarantees are integration-tested against the real Postgres from `.env`; eac
 creates and removes its own rows:
 
 ```sh
-cd backend && go test ./...
+make test
 ```
 
 - `TestNoOvershootUnderConcurrentReceipts` — ten simultaneous receipts, one winner, the
