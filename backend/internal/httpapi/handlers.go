@@ -16,7 +16,7 @@ import (
 type createReceiptRequest struct {
 	IssueID    int64  `json:"issue_id"`
 	Qty        int    `json:"qty"`
-	ReceivedOn string `json:"received_on"` // YYYY-MM-DD (RFC 3339 also accepted)
+	ReceivedOn string `json:"received_on"` // YYYY-MM-DD (anything else is a 400)
 }
 
 func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
