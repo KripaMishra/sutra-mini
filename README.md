@@ -31,6 +31,7 @@ Each receipt has an accounting consequence. Sutra makes sure that:
 | Database | PostgreSQL (Neon free tier; any Postgres works) |
 | Migrations | Embedded SQL, applied by `backend/cmd/migrate` |
 | Sync page | Next.js 16 (App Router, Tailwind) |
+| `POST /ask` (stretch) | Go · langchain-go · GORM · OpenAI-compatible LLM |
 
 ## How it works
 
@@ -144,7 +145,51 @@ accounting, the duplicate `409` reconciles to the same reference instead of doub
 | `GET /issues/{id}` | `issued`, `received`, `outstanding` |
 | `GET /vouchers?status=` | `pending` / `pushed` / `failed` (omit for all) |
 | `POST /vouchers/{id}/retry` | Requeues a `failed` voucher (`200`), `409` if it isn't failed |
+| `POST /ask` | Free-text question over read-only tools (`200` answer + tool trace · `503` LLM not configured · `429` queue full · `502` model failure) |
 | `GET /healthz` | database ping |
+
+## Ask (the stretch goal)
+
+`POST /ask` answers questions like "how much of SKU X is still with job-worker Y?" with an
+LLM that can only read the database. It answers from the same ledger the other endpoints
+use — `sum(issued) − sum(received)` per (SKU, job-worker) — and every tool call is logged
+*and* returned with the answer:
+
+```sh
+curl -s localhost:8080/ask -H 'Content-Type: application/json' \
+  -d '{"question":"how much of CHK-01 is still with Meera Embroidery Works?"}'
+```
+
+The answer comes back with the tool calls behind it, as structured JSON (not JSON-in-strings):
+
+```json
+{
+  "question": "how much of CHK-01 is still with Meera Embroidery Works?",
+  "answer": "120 pieces were issued and 0 received, so 120 pieces are still with them.",
+  "model": "deepseek/deepseek-v4.1-flash",
+  "duration_ms": 12057,
+  "tool_calls": [
+    { "name": "find_skus", "args": { "query": "CHK-01" },
+      "result": { "count": 1, "matches": [ "…" ] }, "duration_ms": 2668 },
+    { "name": "stock_with_job_worker",
+      "args": { "sku": "CHK-01", "job_worker": "Meera Embroidery Works" },
+      "result": { "count": 1, "total_still_with": 120, "rows": [ "…" ] }, "duration_ms": 1681 }
+  ]
+}
+```
+
+- **Tools** — five read-only tools (`find_skus`, `find_job_workers`,
+  `stock_with_job_worker`, `stock_by_sku`, `stock_by_job_worker`), all GORM queries inside a
+  `READ ONLY` transaction with a 5 s statement timeout. There is no write tool and no
+  raw-SQL tool; the schema lives in the system prompt.
+- **Queue** — three questions run at once (`ASK_CONCURRENCY`, default 3); the rest wait in a
+  bounded queue and get `429` + `Retry-After` if it stays full (`ASK_QUEUE_WAIT`, default
+  45 s). One process, no extra infrastructure.
+- **Model** — any OpenAI-compatible endpoint, via langchain-go: `LLM_API_KEY`, `LLM_MODEL`
+  (default `deepseek/deepseek-v4.1-flash`), `LLM_BASE_URL` (no default — where inference
+  goes is an environment decision). With any of the three missing the endpoint answers
+  `503` naming the variable rather than guessing or stubbing silently.
+- **Timeouts** — `/ask` gets its own 60 s budget; every other route stays at 30 s.
 
 ## Tests
 
@@ -175,7 +220,9 @@ check and the assertions go red.
 - Receipts are append-only and the overshoot guard pins READ COMMITTED — both are
   deliberate, and both are enforced by the database.
 - Dates are dates (`YYYY-MM-DD`); money is integer paise.
-- `POST /ask` (the optional LLM stretch goal) is intentionally not built.
+- `POST /ask` (the optional LLM stretch goal) is built — see
+  [Ask](#ask-the-stretch-goal). It is read-only by construction and reports a missing
+  `LLM_*` variable instead of stubbing the model.
 
 Built with coding agents — the candid notes, including what they got wrong, live in
 [`AGENT_NOTES.md`](AGENT_NOTES.md).

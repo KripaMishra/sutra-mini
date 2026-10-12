@@ -68,9 +68,10 @@ checklist — the wording of the brief is the authority, this is the work list.
 
 ## Stretch (only if finished early)
 
-37. `POST /ask` answers "how much of SKU X is still with job-worker Y?" using an LLM with
-    read-only database tools, logging every tool call. Stub the model if there is no key,
-    and say so.
+- [x] 37. `POST /ask` answers "how much of SKU X is still with job-worker Y?" using an LLM
+      with read-only database tools, logging every tool call. Built 2026-10-12; by explicit
+      user decision a missing key answers `503` naming the variable instead of stubbing the
+      model, and the agent loop is exercised in tests with a fake `llms.Model`.
 
 ## How it will be tested
 

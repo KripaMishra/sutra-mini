@@ -18,6 +18,14 @@ type Config struct {
 	AccountingMaxAttempts int
 	WorkerLease           time.Duration
 	WorkerConcurrency     int
+
+	LLMAPIKey  string
+	LLMModel   string
+	LLMBaseURL string
+
+	AskConcurrency int
+	AskQueueDepth  int
+	AskQueueWait   time.Duration
 }
 
 // Load reads configuration from the process environment. Values from a local
@@ -35,6 +43,11 @@ func Load() (*Config, error) {
 		DatabaseURL:       os.Getenv("DATABASE_URL"),
 		Port:              envOr("PORT", "8080"),
 		AccountingBaseURL: envOr("ACCOUNTING_BASE_URL", "http://localhost:8090"),
+		// The /ask LLM. No default base URL on purpose: where inference goes is
+		// an environment decision, never something the repo decides.
+		LLMAPIKey:  os.Getenv("LLM_API_KEY"),
+		LLMModel:   envOr("LLM_MODEL", "deepseek/deepseek-v4.1-flash"),
+		LLMBaseURL: os.Getenv("LLM_BASE_URL"),
 	}
 
 	var err error
@@ -48,6 +61,15 @@ func Load() (*Config, error) {
 		return nil, err
 	}
 	if cfg.WorkerConcurrency, err = intOr("WORKER_CONCURRENCY", 4); err != nil {
+		return nil, err
+	}
+	if cfg.AskConcurrency, err = intOr("ASK_CONCURRENCY", 3); err != nil {
+		return nil, err
+	}
+	if cfg.AskQueueDepth, err = intOr("ASK_QUEUE_DEPTH", 32); err != nil {
+		return nil, err
+	}
+	if cfg.AskQueueWait, err = durationOr("ASK_QUEUE_WAIT", 45*time.Second); err != nil {
 		return nil, err
 	}
 	return cfg, nil

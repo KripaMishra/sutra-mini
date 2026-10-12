@@ -1,5 +1,5 @@
 // Package httpapi exposes the JSON HTTP surface: receipts, issue progress,
-// vouchers and retry.
+// vouchers, retry, and the LLM-backed /ask endpoint.
 package httpapi
 
 import (
@@ -15,11 +15,24 @@ import (
 
 type Server struct {
 	store *store.Store
+	ask   asker
+}
+
+// Option configures optional server dependencies.
+type Option func(*Server)
+
+// WithAsk attaches the /ask service. Without it the route still exists and
+// answers 503, so a half-configured deployment fails loudly instead of 404ing.
+func WithAsk(svc asker) Option {
+	return func(s *Server) { s.ask = svc }
 }
 
 // New wires routes and middleware around an existing pool.
-func New(pool *pgxpool.Pool) http.Handler {
+func New(pool *pgxpool.Pool, opts ...Option) http.Handler {
 	s := &Server{store: store.New(pool)}
+	for _, opt := range opts {
+		opt(s)
+	}
 
 	r := chi.NewRouter()
 	r.Use(middleware.RequestID)
@@ -39,13 +52,24 @@ func New(pool *pgxpool.Pool) http.Handler {
 	r.Use(middleware.ClientIPFromRemoteAddr)
 	r.Use(middleware.Logger)
 	r.Use(middleware.Recoverer)
-	r.Use(middleware.Timeout(30 * time.Second))
 
-	r.Get("/healthz", s.handleHealthz)
-	r.Post("/jobwork/receipts", s.handleCreateReceipt)
-	r.Get("/issues/{id}", s.handleGetIssue)
-	r.Get("/vouchers", s.handleListVouchers)
-	r.Post("/vouchers/{id}/retry", s.handleRetryVoucher)
+	// The database endpoints answer in milliseconds; 30s is already generous.
+	r.Group(func(r chi.Router) {
+		r.Use(middleware.Timeout(30 * time.Second))
+
+		r.Get("/healthz", s.handleHealthz)
+		r.Post("/jobwork/receipts", s.handleCreateReceipt)
+		r.Get("/issues/{id}", s.handleGetIssue)
+		r.Get("/vouchers", s.handleListVouchers)
+		r.Post("/vouchers/{id}/retry", s.handleRetryVoucher)
+	})
+
+	// /ask runs a queue wait plus several model turns, so it gets its own,
+	// longer budget; the server's WriteTimeout is set above this one.
+	r.Group(func(r chi.Router) {
+		r.Use(middleware.Timeout(askTimeout))
+		r.Post("/ask", s.handleAsk)
+	})
 
 	return r
 }
