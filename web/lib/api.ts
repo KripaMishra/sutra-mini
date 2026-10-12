@@ -24,6 +24,14 @@ export type Voucher = {
   updated_at: string;
 };
 
+// During `next build` the /sync prerender starts this fetch and then completes,
+// so the request can never finish and Next rejects it with
+// HANGING_PROMISE_REJECTION. That rejection says nothing about the API's
+// health — logging it just makes `npm run build` look broken.
+function isPrerenderTeardown(err: unknown): boolean {
+  return err instanceof Error && err.message.includes("prerender is complete");
+}
+
 export async function fetchVouchers(): Promise<{ vouchers: Voucher[]; error: string | null }> {
   let res: Response;
   try {
@@ -32,7 +40,9 @@ export async function fetchVouchers(): Promise<{ vouchers: Voucher[]; error: str
       signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
     });
   } catch (err) {
-    console.error("fetchVouchers: request failed", err);
+    if (!isPrerenderTeardown(err)) {
+      console.error("fetchVouchers: request failed", err);
+    }
     return { vouchers: [], error: "The API is unreachable — is the Go API running on port 8080?" };
   }
 
