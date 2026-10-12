@@ -3,8 +3,6 @@
 package httpapi
 
 import (
-	"encoding/json"
-	"log"
 	"net/http"
 	"time"
 
@@ -50,18 +48,4 @@ func New(pool *pgxpool.Pool) http.Handler {
 	r.Post("/vouchers/{id}/retry", s.handleRetryVoucher)
 
 	return r
-}
-
-func writeJSON(w http.ResponseWriter, status int, v any) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(v)
-}
-
-func writeError(w http.ResponseWriter, status int, msg string) {
-	writeJSON(w, status, map[string]string{"error": msg})
-}
-
-func logInternal(op string, err error) {
-	log.Printf("error: %s: %v", op, err)
 }
