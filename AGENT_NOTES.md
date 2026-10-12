@@ -93,11 +93,39 @@ Those three are kept explicit below.
 - Implemented `backend/internal/ask`: GORM finders in a `READ ONLY` transaction, five typed
   tools (no raw SQL, no write path), a hand-rolled langchain-go tool loop with a per-call
   trace and structured log line, and a bounded queue whose workers survive a panicking job.
-- No key is present, so the live check is the `503` path; the full pipeline was additionally
-  smoke-tested against a local fake OpenAI-compatible server on `:8091` — real HTTP, all
-  five tool schemas on the wire, a real Neon read (`issued 80 − received 5 = 75`), and the
-  tool call logged with the request id. Both smoke processes stopped afterwards.
-- 24 new test cases across `internal/ask` (16) and `internal/httpapi` (8): aggregate math,
-  `LIKE` wildcard escaping, read-only refusal, tool-error recovery, step budget, queue cap +
-  `429`, panic isolation, and the `503/502/429/504` mapping. `go test ./...` green against
-  the Postgres in `.env`; changes are uncommitted in the working tree at the time of writing.
+- The 503 path was the first live check; the full pipeline was then smoke-tested against a
+  local fake OpenAI-compatible server on `:8091` — real HTTP, all five tool schemas on the
+  wire, a real Neon read (`issued 80 − received 5 = 75`), and the tool call logged with the
+  request id. Once a key was configured, the same question was answered by the real model
+  (`deepseek/deepseek-v4.1-flash` through an OpenAI-compatible endpoint) with the tool trace
+  and log lines intact. All smoke processes stopped afterwards.
+- 36 tests now cover `/ask` (`internal/ask` 24, `internal/httpapi` 12): aggregate math,
+  `LIKE` wildcard escaping, same-named workers staying separate, truncation reporting,
+  read-only refusal, tool-error recovery, per-turn tool-call cap, step budget, queue cap +
+  `429`, panic isolation, shutdown cancellation, and the `400/413/429/502/503/504` mapping.
+  `go test ./...` green against the Postgres in `.env`; shipped as `40833c3`/`1c32091` on
+  `feat/ask`, merged to `main` (`396f98a`).
+
+### 2026-10-12 — Review pass on `/ask` (before the author's own read)
+
+- Ran four parallel reviewer agents over `c304146..d546d22` (concurrency/lifecycle, SQL and
+  read-only semantics, HTTP/config/hygiene, tests-and-claims). They reproduced failures
+  against the live database rather than only reading code; a temporary probe file they left
+  was deleted before commit.
+- Two findings changed behaviour rather than wording:
+  - **Two job-workers with the same name were summed into one row.** `parties.name` is not
+    unique — the prompt says so — yet the aggregate grouped by name. Rows are now grouped by
+    `p.id`/`s.id`, carry `job_worker_id`/`sku_id`, and a note says when the rows belong to
+    different people who share a name.
+  - **A capped list looked complete.** `total_still_with` was the sum of the first 50 rows and
+    `count` stopped at the limit with no hint. Both finders and the aggregate now carry
+    `COUNT(*) OVER ()` totals and a `truncated` flag; the aggregate's total covers every
+    matched pair even when the rows list does not.
+- Also fixed: shutdown now refuses queued questions and cancels in-flight ones instead of
+  leaving a job waiting for a worker that has exited; an answer that lands exactly at the
+  deadline is returned rather than discarded; one model turn can no longer fan out to
+  unbounded tool calls; a nameless tool call no longer produces a transcript providers reject;
+  a bad `ASK_*` value disables `/ask` instead of failing the whole API at boot; oversize bodies
+  answer `413` and oversize questions `400`; phone numbers are no longer returned or logged;
+  the read pool pings at boot; and `TestNewValidatesQueueSettings` — which passed even with the
+  validation deleted — now asserts the error message.

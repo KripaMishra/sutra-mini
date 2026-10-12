@@ -145,7 +145,7 @@ accounting, the duplicate `409` reconciles to the same reference instead of doub
 | `GET /issues/{id}` | `issued`, `received`, `outstanding` |
 | `GET /vouchers?status=` | `pending` / `pushed` / `failed` (omit for all) |
 | `POST /vouchers/{id}/retry` | Requeues a `failed` voucher (`200`), `409` if it isn't failed |
-| `POST /ask` | Free-text question over read-only tools (`200` answer + tool trace · `503` LLM not configured · `429` queue full · `502` model failure) |
+| `POST /ask` | Free-text question over read-only tools (`200` answer + tool trace · `400` bad body or question over 2000 chars · `413` body over 1 MiB · `429` queue full · `502` model failure · `503` LLM not configured or shutting down · `504` timed out) |
 | `GET /healthz` | database ping |
 
 ## Ask (the stretch goal)
@@ -167,13 +167,15 @@ The answer comes back with the tool calls behind it, as structured JSON (not JSO
   "question": "how much of CHK-01 is still with Meera Embroidery Works?",
   "answer": "120 pieces were issued and 0 received, so 120 pieces are still with them.",
   "model": "deepseek/deepseek-v4.1-flash",
+  "queued_ms": 0,
   "duration_ms": 12057,
   "tool_calls": [
     { "name": "find_skus", "args": { "query": "CHK-01" },
-      "result": { "count": 1, "matches": [ "…" ] }, "duration_ms": 2668 },
+      "result": { "count": 1, "total_matched": 1, "matches": [ "…" ] }, "duration_ms": 2668 },
     { "name": "stock_with_job_worker",
       "args": { "sku": "CHK-01", "job_worker": "Meera Embroidery Works" },
-      "result": { "count": 1, "total_still_with": 120, "rows": [ "…" ] }, "duration_ms": 1681 }
+      "result": { "count": 1, "matched_pairs": 1, "total_still_with": 120, "rows": [ "…" ] },
+      "duration_ms": 1681 }
   ]
 }
 ```
@@ -182,14 +184,24 @@ The answer comes back with the tool calls behind it, as structured JSON (not JSO
   `stock_with_job_worker`, `stock_by_sku`, `stock_by_job_worker`), all GORM queries inside a
   `READ ONLY` transaction with a 5 s statement timeout. There is no write tool and no
   raw-SQL tool; the schema lives in the system prompt.
+- **Answers you can check** — rows are keyed by `job_worker_id`/`sku_id`, because two
+  job-workers may share a name; capped lists carry `total_matched`, `matched_pairs` and
+  `truncated: true` so a partial list is never mistaken for the whole ledger. Contact
+  details (phone numbers) are searchable but never returned or logged.
 - **Queue** — three questions run at once (`ASK_CONCURRENCY`, default 3); the rest wait in a
   bounded queue and get `429` + `Retry-After` if it stays full (`ASK_QUEUE_WAIT`, default
-  45 s). One process, no extra infrastructure.
+  45 s). One process, no extra infrastructure. On shutdown queued questions are refused and
+  in-flight ones cancelled.
 - **Model** — any OpenAI-compatible endpoint, via langchain-go: `LLM_API_KEY`, `LLM_MODEL`
   (default `deepseek/deepseek-v4.1-flash`), `LLM_BASE_URL` (no default — where inference
-  goes is an environment decision). With any of the three missing the endpoint answers
-  `503` naming the variable rather than guessing or stubbing silently.
-- **Timeouts** — `/ask` gets its own 60 s budget; every other route stays at 30 s.
+  goes is an environment decision). With `LLM_API_KEY` or `LLM_BASE_URL` missing the
+  endpoint answers `503` naming the variable rather than guessing or stubbing silently, and
+  a bad `ASK_*` value disables `/ask` instead of failing the API at boot.
+- **Timeouts** — `/ask` gets its own 60 s budget; every other route stays at 30 s. Keep
+  `ASK_QUEUE_WAIT` plus a model turn inside that budget, or a queued question will answer
+  `504` instead of `429`.
+- **No auth** — like the rest of this API, `/ask` is unauthenticated and spends model
+  tokens: run it locally, and do not expose it to the internet.
 
 ## Tests
 
@@ -210,8 +222,16 @@ make test
 - `TestIssueProgressAndVoucherRetry` — the read endpoints and the failed → pending retry
   contract.
 
-Each fails if its guarantee is broken — drop the trigger, the unique key, or the replay
-check and the assertions go red.
+The `/ask` suite (24 tests in `internal/ask`, 12 in `internal/httpapi`) runs the same way: the
+aggregate against real fixtures, `LIKE`-wildcard escaping, a same-name pair of workers that
+must not be merged, truncation reporting, Postgres refusing a write inside the tool
+transaction, the tool loop driven by a fake `llms.Model` (trace, logs, error recovery, step
+budget, per-turn cap, panic isolation), the queue's exactly-three-in-flight and `429` paths,
+and the `400/413/429/502/503/504` mapping — including that a configured service is live, not
+silently unwired.
+
+Each fails if its guarantee is broken — drop the trigger, the unique key, the replay
+check, the read-only transaction or the queue cap and the assertions go red.
 
 ## Notes and decisions
 
