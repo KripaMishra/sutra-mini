@@ -8,8 +8,6 @@ Those three are kept explicit below.
 
 ## Tools used
 
-- Delta (agent harness) with a Go/Postgres/Next.js-capable model for scaffolding,
-  migrations and implementation.
 - Reading: `pdftotext -layout` to transcribe the brief into
   [`docs/MVP_DIRECTIVES.md`](docs/MVP_DIRECTIVES.md).
 - CommandCode (this agent) for the implementation pass after the brief: schema and
@@ -19,13 +17,6 @@ Those three are kept explicit below.
 
 ## What the tools got wrong
 
-- **Ran terminal commands in the wrong repository.** The agent harness keeps its own
-  checkout at `SRS/.delta/worktrees/<id>/SRS`, separate from the primary checkout at
-  `SRS/`. A `cp` of the brief and a `mkdir` were issued against the primary checkout and
-  landed there instead of in the worktree. Caught by `ls` showing none of the files the
-  edit tool had just reported writing. Fixed by deleting the stray `docs/` from the
-  primary checkout — which was empty beforehand — and redoing the copy in the worktree.
-  No user data was touched.
 - **The plain `neon skills -y` quickstart failed** with "no coding agents detected in
   this project" until the target agents were named explicitly (`--agent ...`) — the guide
   assumes the command runs somewhere Neon recognises.
