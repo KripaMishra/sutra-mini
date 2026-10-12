@@ -106,6 +106,15 @@ Those three are kept explicit below.
   `go test ./...` green against the Postgres in `.env`; shipped as `40833c3`/`1c32091` on
   `feat/ask`, merged to `main` (`396f98a`).
 
+### 2026-10-12 — Web: `/` redirects from the config, not a page
+
+- `app/page.tsx` called `redirect("/sync")`, which throws `NEXT_REDIRECT` while Next 16.4's
+  instant-navigation validation (`cacheComponents` + `partialPrefetching`) prerenders the route —
+  so every dev request logged `Could not validate 'instant' … [cause]: NEXT_REDIRECT` even though
+  the 307 itself worked. The redirect moved to `next.config.ts` (`permanent: false` keeps the 307)
+  and the page was deleted, so there is nothing for the validator to render; `next build` is clean
+  and `next start` answers `GET /` with a 307 to `/sync`.
+
 ### 2026-10-12 — Review pass on `/ask`
 
 - Ran four parallel reviewer agents over `c304146..d546d22` (concurrency/lifecycle, SQL and
