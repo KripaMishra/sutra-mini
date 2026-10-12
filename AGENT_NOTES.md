@@ -138,3 +138,14 @@ Those three are kept explicit below.
   answer `413` and oversize questions `400`; phone numbers are no longer returned or logged;
   the read pool pings at boot; and `TestNewValidatesQueueSettings` — which passed even with the
   validation deleted — now asserts the error message.
+- The review missed one thing, and a live run found it: the loop echoed every tool call in the
+  assistant turn but answered only the first eight, so any turn over the cap left
+  `tool_call_id`s without responses — the shape providers reject with a bare 400. The turn is
+  now planned before anything is written back, refusals are answered instead of dropped, and
+  the pairing invariant is asserted on the transcript in a test. A blank query also lists the
+  catalogue now: refusing it had pushed a live model into searching the alphabet letter by
+  letter (15 calls, ~18s) before the gateway gave up on it.
+- The gateway's own `invalid request error` turned out to be intermittent: the exact payload
+  it rejected replays as `200`, and later runs through the same code failed with 25s timeouts
+  instead — recorded here because "the provider said no" is not the same as "we sent
+  rubbish". The request shape is now logged on failure so the next one is a five-second read.
