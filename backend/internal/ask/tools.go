@@ -32,7 +32,7 @@ func readToolDefs() []llms.Tool {
 			Type: "function",
 			Function: &llms.FunctionDefinition{
 				Name:        toolFindSkus,
-				Description: "Find SKUs by a partial code or name (case-insensitive). Returns up to 20 matches with id, code, name and rate in paise; total_matched says how many matched in all.",
+				Description: "Find SKUs by a partial code or name (case-insensitive). Returns up to 20 matches with id, code, name and rate in paise; total_matched says how many matched in all. Leave query blank to list the first 20 SKUs.",
 				Parameters: map[string]any{
 					"type":       "object",
 					"properties": map[string]any{"query": stringProp(`substring of the SKU code or name, e.g. "CHK-01" or "chikan"`)},
@@ -44,7 +44,7 @@ func readToolDefs() []llms.Tool {
 			Type: "function",
 			Function: &llms.FunctionDefinition{
 				Name:        toolFindJobWorkers,
-				Description: "Find job-workers (parties) by a partial name or phone (case-insensitive). Returns up to 20 matches with id and name, plus total_matched for the full count; contact details are never returned. Names are not unique, so use the id.",
+				Description: "Find job-workers (parties) by a partial name or phone (case-insensitive). Returns up to 20 matches with id and name, plus total_matched for the full count; contact details are never returned. Names are not unique, so use the id. Leave query blank to list the first 20 job-workers.",
 				Parameters: map[string]any{
 					"type":       "object",
 					"properties": map[string]any{"query": stringProp(`substring of the job-worker name or phone, e.g. "meera"`)},
@@ -106,9 +106,8 @@ func (s *Service) callTool(ctx context.Context, name, argsJSON string) (string, 
 		if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
 			return "", fmt.Errorf("%s: invalid arguments: %w", name, err)
 		}
-		if strings.TrimSpace(args.Query) == "" {
-			return "", fmt.Errorf("%s: query must not be empty", name)
-		}
+		// A blank query is not an error: it means "show me the first page".
+		// Refusing it made a live model enumerate the alphabet instead.
 		result, err := s.db.findSkus(ctx, args.Query)
 		return encodeResult(result, err)
 
@@ -118,9 +117,6 @@ func (s *Service) callTool(ctx context.Context, name, argsJSON string) (string, 
 		}
 		if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
 			return "", fmt.Errorf("%s: invalid arguments: %w", name, err)
-		}
-		if strings.TrimSpace(args.Query) == "" {
-			return "", fmt.Errorf("%s: query must not be empty", name)
 		}
 		result, err := s.db.findJobWorkers(ctx, args.Query)
 		return encodeResult(result, err)

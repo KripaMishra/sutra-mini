@@ -328,4 +328,68 @@ func TestRunCapsToolCallsPerTurn(t *testing.T) {
 	if executed != maxToolCallsPerTurn || refused != 2 {
 		t.Fatalf("executed %d, refused %d; want %d and 2", executed, refused, maxToolCallsPerTurn)
 	}
+
+	// Every tool call the transcript declares must be answered, or the provider
+	// rejects the whole request (this is the bug the review pass missed).
+	declared := map[string]bool{}
+	answered := map[string]bool{}
+	for _, message := range model.lastMessages() {
+		switch message.Role {
+		case llms.ChatMessageTypeAI:
+			for _, part := range message.Parts {
+				if call, ok := part.(llms.ToolCall); ok {
+					declared[call.ID] = true
+				}
+			}
+		case llms.ChatMessageTypeTool:
+			for _, part := range message.Parts {
+				if response, ok := part.(llms.ToolCallResponse); ok {
+					answered[response.ToolCallID] = true
+				}
+			}
+		}
+	}
+	if len(declared) == 0 {
+		t.Fatal("the assistant turn was not echoed at all")
+	}
+	for id := range declared {
+		if !answered[id] {
+			t.Fatalf("tool call %s is in the transcript with no response; providers reject that", id)
+		}
+	}
+	for id := range answered {
+		if !declared[id] {
+			t.Fatalf("tool response %s answers a call the transcript never declared", id)
+		}
+	}
+	// Refusals are answered too — the model gets told why — so every call it
+	// asked for is declared and paired.
+	if want := maxToolCallsPerTurn + 2; len(declared) != want {
+		t.Fatalf("declared calls = %d, want %d (executed plus refused)", len(declared), want)
+	}
+}
+
+// A blank query lists the catalogue instead of erroring: refusing it is what
+// made a live model search letter by letter.
+func TestFindersListWhenTheQueryIsBlank(t *testing.T) {
+	ctx := context.Background()
+
+	skus, err := testRead.findSkus(ctx, "")
+	if err != nil {
+		t.Fatalf("findSkus(blank): %v", err)
+	}
+	if skus.Count == 0 || skus.Count > findLimit || skus.Total < skus.Count {
+		t.Fatalf("blank SKU query = count %d, total %d; want a capped page of the catalogue", skus.Count, skus.Total)
+	}
+	if !strings.Contains(skus.Note, "no query given") {
+		t.Fatalf("note = %q, want it to say the listing is a first page", skus.Note)
+	}
+
+	workers, err := testRead.findJobWorkers(ctx, "   ")
+	if err != nil {
+		t.Fatalf("findJobWorkers(blank): %v", err)
+	}
+	if workers.Count == 0 || workers.Count > findLimit {
+		t.Fatalf("blank worker query = count %d; want a capped page of the catalogue", workers.Count)
+	}
 }

@@ -194,18 +194,23 @@ func like(s string) string {
 }
 
 // findSkus returns the SKUs whose code or name contains the query, up to
-// findLimit of them. A partial name stays visible to the model so it can ask a
-// better question, and total_matched says when the list is capped.
+// findLimit of them. A blank query lists the first page instead of erroring:
+// asking for the catalogue is a normal request, and refusing it pushed one live
+// model into searching letter by letter. A partial name stays visible so the
+// model can ask a better question, and total_matched says when the list is
+// capped.
 func (r *readDB) findSkus(ctx context.Context, query string) (skuMatches, error) {
 	out := skuMatches{Query: query, Matches: []skuMatch{}}
 	err := r.readOnly(ctx, func(tx *gorm.DB) error {
-		pattern := like(query)
-		return tx.Model(&Sku{}).
+		q := tx.Model(&Sku{}).
 			Select("id, code, name, rate_paise, CAST(COUNT(*) OVER () AS bigint) AS matched_total").
-			Where("code ILIKE ? OR name ILIKE ?", pattern, pattern).
 			Order("code").
-			Limit(findLimit).
-			Scan(&out.Matches).Error
+			Limit(findLimit)
+		if query != "" {
+			pattern := like(query)
+			q = q.Where("code ILIKE ? OR name ILIKE ?", pattern, pattern)
+		}
+		return q.Scan(&out.Matches).Error
 	})
 	if err != nil {
 		return out, err
@@ -215,24 +220,30 @@ func (r *readDB) findSkus(ctx context.Context, query string) (skuMatches, error)
 		out.Total = int(out.Matches[0].MatchedTotal)
 	}
 	out.Truncated = out.Total > out.Count
-	out.Note = matchNote(out.Count, out.Total, "SKU", "use a shorter fragment of the code or name")
+	if strings.TrimSpace(query) == "" {
+		out.Note = fmt.Sprintf("no query given, so this is the first %d of %d SKUs", out.Count, out.Total)
+	} else {
+		out.Note = matchNote(out.Count, out.Total, "SKU", "use a shorter fragment of the code or name")
+	}
 	return out, nil
 }
 
-// findJobWorkers returns the parties whose name or phone contains the query.
-// parties.name has no unique constraint, so several rows are a normal answer,
-// not an error — and each row carries its id so the model can tell two
-// same-named workers apart.
+// findJobWorkers returns the parties whose name or phone contains the query; a
+// blank query lists the first page, like findSkus. parties.name has no unique
+// constraint, so several rows are a normal answer, not an error — and each row
+// carries its id so the model can tell two same-named workers apart.
 func (r *readDB) findJobWorkers(ctx context.Context, query string) (workerMatches, error) {
 	out := workerMatches{Query: query, Matches: []workerMatch{}}
 	err := r.readOnly(ctx, func(tx *gorm.DB) error {
-		pattern := like(query)
-		return tx.Model(&JobWorker{}).
+		q := tx.Model(&JobWorker{}).
 			Select("id, name, CAST(COUNT(*) OVER () AS bigint) AS matched_total").
-			Where("name ILIKE ? OR phone ILIKE ?", pattern, pattern).
 			Order("name, id").
-			Limit(findLimit).
-			Scan(&out.Matches).Error
+			Limit(findLimit)
+		if query != "" {
+			pattern := like(query)
+			q = q.Where("name ILIKE ? OR phone ILIKE ?", pattern, pattern)
+		}
+		return q.Scan(&out.Matches).Error
 	})
 	if err != nil {
 		return out, err
@@ -242,7 +253,11 @@ func (r *readDB) findJobWorkers(ctx context.Context, query string) (workerMatche
 		out.Total = int(out.Matches[0].MatchedTotal)
 	}
 	out.Truncated = out.Total > out.Count
-	out.Note = matchNote(out.Count, out.Total, "job-worker", "use a shorter fragment of the name")
+	if strings.TrimSpace(query) == "" {
+		out.Note = fmt.Sprintf("no query given, so this is the first %d of %d job-workers", out.Count, out.Total)
+	} else {
+		out.Note = matchNote(out.Count, out.Total, "job-worker", "use a shorter fragment of the name")
+	}
 	return out, nil
 }
 

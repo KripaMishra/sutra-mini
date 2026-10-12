@@ -102,7 +102,8 @@ func (s *Service) run(ctx context.Context, question string) (Answer, error) {
 			return nil
 		}()
 		if err != nil {
-			s.logf(ctx, "llm turn=%d failed after %s: %v", step, time.Since(started).Round(time.Millisecond), err)
+			s.logf(ctx, "llm turn=%d failed after %s: %v; request: %s",
+				step, time.Since(started).Round(time.Millisecond), err, messageShape(messages))
 			// A cancelled or timed-out request is not a model failure: let the
 			// HTTP layer answer 504 / drop the connection instead of 502.
 			if ctxErr := ctx.Err(); ctxErr != nil {
@@ -121,47 +122,67 @@ func (s *Service) run(ctx context.Context, question string) (Answer, error) {
 			return answer, nil
 		}
 
-		// Echo the assistant turn back. Prefer the provider's raw parts when it
-		// supplies them (they can carry reasoning blocks that must round-trip);
-		// otherwise rebuild the tool calls — skipping any call the provider left
-		// without a function, so the transcript stays consistent with the tool
-		// responses below.
-		assistantParts := choice.Parts
-		if len(assistantParts) == 0 {
-			for _, call := range choice.ToolCalls {
-				if call.FunctionCall != nil {
-					assistantParts = append(assistantParts, call)
-				}
-			}
+		// Plan the turn before writing anything back. The rule the providers
+		// enforce: every tool call that appears in the assistant message must be
+		// followed by exactly one tool response. So a call we will not run is
+		// either answered with a refusal (and echoed), or not echoed at all —
+		// never echoed and left unanswered.
+		type plannedCall struct {
+			call    llms.ToolCall
+			record  ToolCallRecord
+			respond bool
 		}
-		if len(assistantParts) > 0 {
-			messages = append(messages, llms.MessageContent{Role: llms.ChatMessageTypeAI, Parts: assistantParts})
+		plan := make([]plannedCall, 0, len(choice.ToolCalls))
+		responded := 0
+		for _, call := range choice.ToolCalls {
+			item := plannedCall{call: call}
+			switch {
+			case call.FunctionCall == nil || strings.TrimSpace(call.FunctionCall.Name) == "":
+				// No name to answer: keep it out of the transcript entirely.
+				item.record = s.rejectedToolCall(ctx, call, "refused: tool call without a function name")
+			case responded >= maxToolCallsPerTurn:
+				item.record = s.rejectedToolCall(ctx, call,
+					fmt.Sprintf("refused: at most %d tool calls are run per model turn; make fewer, better-aimed calls", maxToolCallsPerTurn))
+				// Still responded to below: the id is already in the echo.
+				item.respond = true
+			default:
+				item.record = s.runTool(ctx, call)
+				item.respond = true
+			}
+			if item.respond {
+				responded++
+			}
+			plan = append(plan, item)
+			answer.ToolCalls = append(answer.ToolCalls, item.record)
 		}
 
-		// One model turn may ask for many tools; execute a bounded number and
-		// tell the model about the rest instead of running for as long as it asks.
-		for index, call := range choice.ToolCalls {
-			if index >= maxToolCallsPerTurn {
-				answer.ToolCalls = append(answer.ToolCalls, s.rejectedToolCall(ctx, call))
-				continue
+		if responded > 0 {
+			// The echo is rebuilt from the calls we answer rather than using
+			// choice.Parts: langchaingo's OpenAI client never populates Parts,
+			// and rebuilding guarantees the transcript stays pairable.
+			parts := make([]llms.ContentPart, 0, responded)
+			for _, item := range plan {
+				if item.respond {
+					parts = append(parts, item.call)
+				}
 			}
-			record := s.runTool(ctx, call)
-			answer.ToolCalls = append(answer.ToolCalls, record)
-			// A call with no function name cannot be answered with a tool
-			// message (providers reject responses for unknown ids), so it stays
-			// in the trace only and the loop moves on.
-			if record.Name == "" {
-				continue
+			messages = append(messages, llms.MessageContent{Role: llms.ChatMessageTypeAI, Parts: parts})
+			for _, item := range plan {
+				if !item.respond {
+					continue
+				}
+				messages = append(messages, llms.MessageContent{
+					Role: llms.ChatMessageTypeTool,
+					Parts: []llms.ContentPart{llms.ToolCallResponse{
+						ToolCallID: item.call.ID,
+						Name:       item.record.Name,
+						Content:    item.record.fullResult,
+					}},
+				})
 			}
-			messages = append(messages, llms.MessageContent{
-				Role: llms.ChatMessageTypeTool,
-				Parts: []llms.ContentPart{llms.ToolCallResponse{
-					ToolCallID: call.ID,
-					Name:       record.Name,
-					Content:    record.fullResult,
-				}},
-			})
 		}
+		s.logf(ctx, "llm turn=%d dur=%s asked=%d answered=%d refused=%d", step,
+			time.Since(started).Round(time.Millisecond), len(choice.ToolCalls), responded, len(choice.ToolCalls)-responded)
 	}
 
 	answer.Duration = time.Since(started)
@@ -199,19 +220,53 @@ func (s *Service) runTool(ctx context.Context, call llms.ToolCall) ToolCallRecor
 	return record
 }
 
-// rejectedToolCall records, without executing, a tool call beyond
-// maxToolCallsPerTurn: the refusal is logged and traced so the cap is visible
-// instead of silent.
-func (s *Service) rejectedToolCall(ctx context.Context, call llms.ToolCall) ToolCallRecord {
-	record := ToolCallRecord{Error: fmt.Sprintf("refused: at most %d tool calls are run per model turn", maxToolCallsPerTurn)}
+// rejectedToolCall records, without executing, a tool call the loop will not
+// run: the reason is logged and traced so the cap is visible instead of silent.
+// When the call is still answered (the id is already in the transcript) the
+// model receives the reason as its tool result.
+func (s *Service) rejectedToolCall(ctx context.Context, call llms.ToolCall, reason string) ToolCallRecord {
+	record := ToolCallRecord{Error: reason}
 	if call.FunctionCall != nil {
 		record.Name = call.FunctionCall.Name
 		record.Args = tracePayload(call.FunctionCall.Arguments, traceArgLimit)
 	}
-	record.Result = json.RawMessage(`{"error":"tool call not executed: per-turn tool-call limit reached"}`)
-	record.fullResult = string(record.Result)
-	s.logf(ctx, "tool=%s refused: per-turn limit of %d reached", record.Name, maxToolCallsPerTurn)
+	encoded, _ := json.Marshal(map[string]string{"error": reason})
+	record.Result = encoded
+	record.fullResult = string(encoded)
+	s.logf(ctx, "tool=%s %s", record.Name, reason)
 	return record
+}
+
+// messageShape summarizes the outbound transcript: how many tool calls it
+// declares and how many it answers. A mismatch there is what providers reject
+// with a bare "invalid request", so log it whenever a model call fails.
+func messageShape(messages []llms.MessageContent) string {
+	declared, answered := 0, 0
+	shape := make([]string, 0, len(messages))
+	for _, message := range messages {
+		switch message.Role {
+		case llms.ChatMessageTypeSystem:
+			shape = append(shape, "sys")
+		case llms.ChatMessageTypeHuman:
+			shape = append(shape, "user")
+		case llms.ChatMessageTypeAI:
+			calls := 0
+			for _, part := range message.Parts {
+				if _, ok := part.(llms.ToolCall); ok {
+					calls++
+				}
+			}
+			declared += calls
+			shape = append(shape, fmt.Sprintf("ai(%d calls)", calls))
+		case llms.ChatMessageTypeTool:
+			answered++
+			shape = append(shape, "tool")
+		default:
+			shape = append(shape, string(message.Role))
+		}
+	}
+	return fmt.Sprintf("%d messages, %d tool calls declared, %d answered [%s]",
+		len(messages), declared, answered, strings.Join(shape, " "))
 }
 
 // tracePayload embeds a payload in the trace as JSON when it is valid and
